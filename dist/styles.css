@@ -115,3 +115,29 @@ table.replicas th { background: #18263d; color: #9db4d6; font-weight: 600; }
 code { background: #0e1626; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 .summary-ok { color: #7fd6a4; font-weight: 600; }
 .summary-fail { color: #ff9daf; font-weight: 600; }
+
+/* 可替换多数见证 */
+.witness-panel {
+  border: 1px solid #33507a;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 10px 0 14px;
+  background: #101a2c;
+}
+.witness-panel h3 { margin: 0 0 8px; font-size: 14px; color: #bcd4ff; }
+.witness-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.witness-switch { margin-top: 10px; border-top: 1px dashed #2c3f5e; padding-top: 8px; }
+.commit-picks { margin: 2px 0 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pick-btn { background: #1d2f52; border-color: #3a6aa0; color: #cfe0ff; }
+.pick-btn:hover { background: #27426f; }
+.pick-btn.picked { background: #2f5d8c; border-color: #6fa8dc; color: #ffffff; font-weight: 600; }
+table.witness-groups { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-top: 6px; }
+table.witness-groups th, table.witness-groups td {
+  border: 1px solid #263850; padding: 5px 8px; text-align: left; vertical-align: top;
+}
+table.witness-groups th { background: #18263d; color: #9db4d6; font-weight: 600; }
+.no-witness {
+  margin-top: 8px; padding: 8px 12px; border-radius: 8px;
+  background: #3a1721; border: 1px solid #b0475c; color: #ffd3da; font-size: 13px;
+}
+.no-witness b { color: #ff9daf; }

@@ -306,6 +306,121 @@ section('逐事件快照内容');
   assert(s.replicas.length === 3, '每个副本一行');
 }
 
+// ---------- 可替换多数见证 ----------
+section('可替换的最小组多数见证');
+const R = (target, prevLogIndex, prevLogTerm, entries) =>
+  ({ type: 'replicate', target, prevLogIndex, prevLogTerm, entries });
+const C = (index) => ({ type: 'commit', index });
+{
+  // stable：5 节点，3 个匹配 -> 最小组 3 个且唯一；4 个匹配 -> C(4,3)=4 个最小组
+  const mk = (targets) => ({
+    nodes: ['a', 'b', 'c', 'd', 'e'],
+    events: [
+      ...targets.map((t) => ({ type: 'replicate', target: t, prevLogIndex: 0, prevLogTerm: 0, entries: [{ term: 1 }] })),
+      { type: 'commit', index: 1 },
+    ],
+  });
+  const r3 = replay(mk(['a', 'b', 'c']));
+  const w3 = r3.snapshots[3].detail.checks[0].witness;
+  assert(w3.valid && w3.groupSize === 3, 'stable 最小组大小为多数 3');
+  assert(w3.minimalGroups.length === 1, '恰好 3 个匹配副本时仅 1 个最小组');
+  assert(eq(w3.minimalGroups[0].nodes, ['a', 'b', 'c']), '最小组即三个匹配副本');
+  const r4 = replay(mk(['a', 'b', 'c', 'd']));
+  const w4 = r4.snapshots[4].detail.checks[0].witness;
+  assert(w4.minimalGroups.length === 4, '4 个匹配副本时枚举全部 C(4,3)=4 个最小组');
+  assert(w4.minimalGroups.every((g) => g.nodes.length === 3), '所有组同为最小大小');
+  // 稳定顺序：组内按成员集合顺序 a<b<c<d<e，组间按同序字典序
+  assert(eq(w4.minimalGroups[0].nodes, ['a', 'b', 'c']) && eq(w4.minimalGroups[3].nodes, ['b', 'c', 'd']),
+    '最小组按成员稳定顺序排列');
+  // 每个枚举组都真的是多数
+  assert(w4.minimalGroups.every((g) => g.nodes.length >= w4.need), '每个见证组都达到多数门槛');
+}
+{
+  // joint 双侧重叠：旧 {a,b,c} 全匹配，新 {a,b,c,d} 全匹配 -> 最小 3 节点，共 4 个三元组
+  const r = replay({
+    nodes: ['a', 'b', 'c'],
+    events: [
+      R('a', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+      R('b', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+      R('c', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+      R('d', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+      C(1),
+    ],
+  });
+  const w = r.snapshots[4].detail.checks[0].witness;
+  assert(w.valid && w.mode === 'joint', 'joint 提交按双集合求见证');
+  assert(w.groupSize === 3, '双侧多数最小大小为 max(2,3)=3');
+  assert(w.minimalGroups.length === 4, '枚举 4 个三元最小组');
+  const ok = w.minimalGroups.every((g) =>
+    g.old.length >= 2 && g.new.length >= 3 &&
+    eq(g.old, g.nodes.filter((n) => ['a', 'b', 'c'].includes(n))) &&
+    eq(g.new, g.nodes.filter((n) => ['a', 'b', 'c', 'd'].includes(n))));
+  assert(ok, '每个组同时覆盖旧(>=2)、新(>=3)两侧多数且成员归类正确');
+}
+{
+  // 重叠部分不足时，更大的可行组（4 节点）不得被列为「最小」组
+  // 旧 {a,b,c} 匹配 a,b,c；新 {a,c,d,e} 匹配 a,c,d,e；旧需2 新需3
+  // 最小三元组只有 {a,c,d}、{a,c,e}；{a,d,e}+补旧 等四元组须被排除
+  const r = replay({
+    nodes: ['a', 'b', 'c'],
+    events: [
+      R('a', 0, 0, [jointEntry(['a', 'c', 'd', 'e'])]),
+      R('c', 0, 0, [jointEntry(['a', 'c', 'd', 'e'])]),
+      R('d', 0, 0, [jointEntry(['a', 'c', 'd', 'e'])]),
+      R('e', 0, 0, [jointEntry(['a', 'c', 'd', 'e'])]),
+      C(1),
+    ],
+  });
+  assert(r.ok, '双侧多数满足时提交成功');
+  const w = r.snapshots[4].detail.checks[0].witness;
+  assert(w.groupSize === 3 && w.minimalGroups.length === 2, '仅列 2 个三元最小组，排除四元可行组');
+  const keys = w.minimalGroups.map((g) => g.nodes.join('')).sort();
+  assert(eq(keys, ['acd', 'ace']), '最小组为 {a,c,d} 与 {a,c,e}');
+}
+{
+  // final 条目：落盘后快照已回 stable，但见证仍须按提交前 joint 双集合求组（含旧集合）
+  const events = [
+    R('a', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+    R('b', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+    R('d', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+    C(1),
+    R('a', 1, 1, [finalEntry(['a', 'b', 'c', 'd'])]),
+    R('b', 1, 1, [finalEntry(['a', 'b', 'c', 'd'])]),
+    R('d', 1, 1, [finalEntry(['a', 'b', 'c', 'd'])]),
+    C(2),
+  ];
+  const r = replay({ nodes: ['a', 'b', 'c'], events });
+  const snap = r.snapshots[7];
+  assert(snap.phase.mode === 'stable' && eq(snap.phase.nodes, ['a', 'b', 'c', 'd']),
+    'final 落盘后快照回到新 stable');
+  const w = snap.detail.checks[0].witness;
+  assert(w.mode === 'joint', 'final 见证按提交前 joint 规则求组，不按落盘后 stable');
+  assert(eq(w.requirement.old, ['a', 'b', 'c']) && eq(w.requirement.new, ['a', 'b', 'c', 'd']),
+    'final 见证保留旧、新双集合');
+  assert(w.minimalGroups.length === 1 && eq(w.minimalGroups[0].old, ['a', 'b']) &&
+    eq(w.minimalGroups[0].new, ['a', 'b', 'd']), 'final 最小组仍覆盖旧侧 a,b');
+}
+{
+  // 匹配副本不足：见证标记无效并指出缺失侧，不从日志末尾猜测
+  const b = replay({ nodes: ['a', 'b', 'c'], events: [
+    R('a', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+    R('d', 0, 0, [jointEntry(['a', 'b', 'c', 'd'])]),
+    C(1),
+  ] });
+  const wb = b.failure.check.witness;
+  assert(wb.valid === false && wb.minimalGroups.length === 0, '缺旧多数时无有效见证、无最小组');
+  assert(wb.missingSides.some((s) => s.side === 'old' && s.need === 2 && s.have === 1),
+    '指出旧集合一侧无法组成最小组（需2有1）');
+  assert(eq(wb.oldMatched, ['a']) && eq(wb.newMatched, ['a', 'd']), '统计仍只认真正索引/任期匹配的副本');
+
+  const c2 = replay({ nodes: ['a', 'b', 'c'], events: [
+    R('a', 0, 0, [{ term: 1 }]),
+    C(1),
+  ] });
+  const wc = c2.failure.check.witness;
+  assert(wc.valid === false && wc.missingSides[0].side === 'stable', 'stable 不足多数时同样标记无有效见证');
+}
+
 function eq(a, b) {
   return a.length === b.length && a.every((x) => b.includes(x));
 }
