@@ -115,3 +115,41 @@ table.replicas th { background: #18263d; color: #9db4d6; font-weight: 600; }
 code { background: #0e1626; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 .summary-ok { color: #7fd6a4; font-weight: 600; }
 .summary-fail { color: #ff9daf; font-weight: 600; }
+
+/* ---------- 可替换多数见证 ---------- */
+.wchips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+.wchip {
+  font-size: 12px; padding: 3px 10px; border-radius: 16px;
+  background: #1d2f52; border-color: #3a6aa0;
+}
+.wchip:hover { background: #27406e; }
+.wchip.selected { background: #315090; border-color: #6f9fe0; color: #ffffff; font-weight: 600; }
+.witness-panel {
+  margin: 8px 0 10px; padding: 10px 12px; border-radius: 8px;
+  background: #0d1728; border: 1px solid #2f4566; border-left: 4px solid #5b8fd6;
+}
+.whead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+.wline { font-size: 12.5px; color: #b7c8e2; margin: 4px 0; }
+.wline b { color: #e7eefc; }
+.nowitness {
+  margin-top: 8px; padding: 9px 11px; border-radius: 8px;
+  background: #3a1721; border: 1px solid #b0475c; color: #ffc4cf; font-size: 13px;
+}
+ol.wgroups { list-style: none; margin: 6px 0 2px; padding: 0; }
+ol.wgroups li {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 5px 8px; margin: 4px 0; border-radius: 6px; background: #122036;
+  border: 1px solid #263a58;
+}
+.gidx { font-weight: 700; color: #8fb6ff; font-size: 12px; min-width: 26px; }
+.gnodes { display: flex; flex-wrap: wrap; gap: 4px; }
+.wnode {
+  display: inline-flex; align-items: center; gap: 3px;
+  border: 1px solid #3a6aa0; border-radius: 4px; padding: 1px 7px;
+  background: #16294a; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+}
+.wnode i {
+  font-style: normal; font-size: 10px; color: #ffd987; border-left: 1px solid #3a6aa0;
+  padding-left: 4px; margin-left: 2px;
+}
+.cover { font-size: 12px; color: #8aa0c0; }

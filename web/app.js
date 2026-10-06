@@ -81,6 +81,31 @@ const EXAMPLES = {
 // ---------- 表单状态 ----------
 let uiEvents = [];
 
+// ---------- 复核结果与见证选择状态 ----------
+let lastResult = null;
+// 选中的“某次成功提交的某个下标”，键为 `事件序号:日志下标`；随原轨迹更新
+let selectedWitnessKey = null;
+
+function findWitness(result, key) {
+  if (!result || !key) return null;
+  for (const s of result.snapshots) {
+    if (s.type !== 'commit') continue;
+    for (const c of s.detail.checks) {
+      const k = `${s.seq}:${c.index}`;
+      if (k === key) return { snapSeq: s.seq, check: c, witness: c.witness, key: k, source: 'snapshot' };
+    }
+  }
+  // 同一提交事件内、失败下标之前已实际提交成功的下标
+  const f = result.failure;
+  if (f && Array.isArray(f.checks)) {
+    for (const c of f.checks) {
+      const k = `${f.eventSeq}:${c.index}`;
+      if (k === key) return { snapSeq: f.eventSeq, check: c, witness: c.witness, key: k, source: 'failure' };
+    }
+  }
+  return null;
+}
+
 function newReplEvent() {
   return { type: 'replicate', target: '', prevLogIndex: 0, prevLogTerm: 0,
     entries: [{ term: 1 }] };
@@ -306,6 +331,88 @@ function logCell(rep) {
   }).join(' ') + (startIdx > 1 ? ` <span class="tag" style="color:#5d7292">(前 ${startIdx - 1} 项已折叠)</span>` : '');
 }
 
+// ---------- 可替换多数见证 ----------
+function entryKindText(w) {
+  if (w.entryKind === 'joint') return 'joint 配置条目';
+  if (w.entryKind === 'final') return 'final 配置条目';
+  return '普通条目';
+}
+function witnessChips(snapSeq, checks) {
+  const chips = checks.map((c) => {
+    const key = `${snapSeq}:${c.index}`;
+    const sel = key === selectedWitnessKey ? ' selected' : '';
+    return `<button class="wchip${sel}" data-wkey="${esc(key)}">下标 ${c.index} · 任期 ${c.term}</button>`;
+  }).join('');
+  return `<div class="wchips"><span class="tag">选择本次成功提交查看可替换多数见证：</span>${chips}</div>`;
+}
+
+function groupRow(g, w, i) {
+  const inOld = new Set(w.old || []);
+  const inNew = new Set(w.new || []);
+  const nodes = g.nodes
+    .map((n) => {
+      const marks = [];
+      if (w.rule === 'joint') {
+        if (inOld.has(n)) marks.push('旧');
+        if (inNew.has(n)) marks.push('新');
+      }
+      return `<span class="wnode" title="${marks.length ? `同时计入${marks.join('、')}集合` : '成员'}">${esc(n)}${marks.length ? `<i>${marks.join('/')}</i>` : ''}</span>`;
+    })
+    .join('');
+  let cover = '';
+  if (w.rule === 'joint') {
+    cover = `<span class="cover">旧侧 ${g.oldCovered.length}/${w.old.length} 需 ${w.oldNeed}：[${esc(g.oldCovered.join(', '))}] ｜ ` +
+      `新侧 ${g.newCovered.length}/${w.new.length} 需 ${w.newNeed}：[${esc(g.newCovered.join(', '))}]</span>`;
+  } else {
+    cover = `<span class="cover">${g.nodes.length}/${w.members.length}（需 ${w.need}）</span>`;
+  }
+  return `<li><span class="gidx">#${i + 1}</span><span class="gnodes">${nodes}</span>${cover}</li>`;
+}
+
+function witnessPanel(w) {
+  const kindTxt = entryKindText(w);
+  let head;
+  let matchedBlock;
+  let body;
+  if (w.rule === 'stable') {
+    head = `<div class="whead">
+      <span class="badge stable">stable 单集合多数规则</span>
+      <span class="tag">${esc(kindTxt)} · 索引 ${w.index} · 任期 ${w.term}</span>
+    </div>
+    <div class="wline">当时成员集合 {${esc(w.members.join(', '))}}，多数需 <b>${w.need}</b> 个匹配副本。</div>`;
+    matchedBlock = `<div class="wline">索引+任期确实匹配的副本（${w.matched.length}）：[${esc(w.matched.join(', ')) || '无'}]；
+      未匹配/缺失：[${esc(w.missing.join(', ')) || '无'}]</div>`;
+  } else {
+    head = `<div class="whead">
+      <span class="badge joint">joint 双侧多数规则（提交前生效）</span>
+      <span class="tag">${esc(kindTxt)} · 索引 ${w.index} · 任期 ${w.term}</span>
+    </div>
+    <div class="wline">旧集合 {${esc(w.old.join(', '))}} 需 <b>${w.oldNeed}</b>，
+      新集合 {${esc(w.new.join(', '))}} 需 <b>${w.newNeed}</b>；同一节点同时属于两侧时双侧计票。
+      ${w.entryKind === 'final' ? '<b>final 条目按提交前仍生效的双集合规则求组，提交完成后才回到 stable。</b>' : ''}</div>`;
+    matchedBlock = `<div class="wline">
+      旧侧匹配（${w.oldMatched.length}）：[${esc(w.oldMatched.join(', ')) || '无'}]，缺失：[${esc(w.oldMissing.join(', ')) || '无'}]<br/>
+      新侧匹配（${w.newMatched.length}）：[${esc(w.newMatched.join(', ')) || '无'}]，缺失：[${esc(w.newMissing.join(', ')) || '无'}]</div>`;
+  }
+
+  if (!w.feasible) {
+    const sideTxt = w.rule === 'stable'
+      ? '成员集合侧'
+      : w.missingSides.map((s) => (s === 'old' ? '旧集合侧' : '新集合侧')).join('、');
+    body = `<div class="nowitness">⛔ 该提交没有有效见证：${esc(sideTxt)}无法组成最小组。
+      仅以日志末尾猜测见证无效——必须由上述索引 ${w.index}、任期 ${w.term} 确实匹配的副本凑齐规则所需多数。</div>`;
+  } else {
+    const overlap = w.rule === 'joint'
+      ? `<div class="wline">最小见证组大小 <b>${w.minSize}</b> 个节点（共 ${w.groups.length} 组，按节点稳定顺序排列）；
+         组内同时覆盖旧、新集合的节点在组内以 <i>旧/新</i> 标注。</div>`
+      : `<div class="wline">最小见证组大小 <b>${w.minSize}</b> 个节点（全部 ${w.groups.length} 组，按节点稳定顺序排列）。</div>`;
+    body = `${overlap}<ol class="wgroups">${w.groups.map((g, i) => groupRow(g, w, i)).join('')}</ol>` +
+      (w.truncated ? '<div class="wline" style="color:#ffb27d">组合数过多，已截断展示。</div>' : '');
+  }
+
+  return `<div class="witness-panel">${head}${matchedBlock}${body}</div>`;
+}
+
 function renderSnapshots(result) {
   const tl = $('#timeline');
   tl.innerHTML = '';
@@ -332,12 +439,19 @@ function renderSnapshots(result) {
         <td>${r.length}</td>
         <td class="logcell">${logCell(r)}</td>
       </tr>`).join('');
+    let witnessExtra = '';
+    if (s.type === 'commit') {
+      witnessExtra = witnessChips(s.seq, s.detail.checks);
+      const picked = findWitness(lastResult, selectedWitnessKey);
+      if (picked && picked.snapSeq === s.seq) witnessExtra += witnessPanel(picked.witness);
+    }
     div.innerHTML = `
       <h3>${esc(head)}</h3>
       <div class="badges">
         <span class="badge commit">已提交索引 commitIndex = ${s.commitIndex}</span>
         ${phaseBadge(s.phase)}
       </div>
+      ${witnessExtra}
       <table class="replicas">
         <thead><tr><th>副本</th><th>日志长度</th><th>日志末尾（尾部条目，J=joint, F=final）</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -355,18 +469,14 @@ function renderSnapshots(result) {
         <td>${r.length}</td>
         <td class="logcell">${logCell(r)}</td>
       </tr>`).join('');
-    let checks = '';
-    if (f.check && f.check.requirement) {
-      const c = f.check;
-      if (c.requirement.mode === 'joint') {
-        checks = `<div class="hint" style="margin-top:6px">
-          旧集合 {${esc(c.requirement.old.join(', '))}} 需 ${c.oldNeed}，匹配 [${esc(c.oldMatched.join(', '))}]，缺失 [${esc(c.oldMissing.join(', '))}]<br/>
-          新集合 {${esc(c.requirement.new.join(', '))}} 需 ${c.newNeed}，匹配 [${esc(c.newMatched.join(', '))}]，缺失 [${esc(c.newMissing.join(', '))}]</div>`;
-      } else {
-        checks = `<div class="hint" style="margin-top:6px">
-          配置 {${esc(c.requirement.nodes.join(', '))}} 需多数 ${c.need}，匹配 [${esc(c.matched.join(', '))}]，缺失 [${esc(c.missing.join(', '))}]</div>`;
-      }
+    let priorCommitWitness = '';
+    if (Array.isArray(f.checks) && f.checks.length) {
+      priorCommitWitness = witnessChips(f.eventSeq, f.checks);
+      const picked = findWitness(lastResult, selectedWitnessKey);
+      if (picked && picked.source === 'failure') priorCommitWitness += witnessPanel(picked.witness);
     }
+    // 失败下标本身：若已完成计票（quorum 失败），直接给出“无有效见证 + 缺失侧”结论
+    const failedWitness = f.check && f.check.witness ? witnessPanel(f.check.witness) : '';
     div.innerHTML = `
       <h3>⛔ 事件 #${f.eventSeq} 首次失败（状态未改变，以下为此前快照）</h3>
       <div class="badges">
@@ -375,7 +485,8 @@ function renderSnapshots(result) {
         ${phaseBadge(f.phase)}
       </div>
       <div class="fail-detail"><span class="cat">定位：</span>${esc(f.message)}</div>
-      ${checks}
+      ${failedWitness}
+      ${priorCommitWitness}
       <table class="replicas" style="margin-top:8px">
         <thead><tr><th>副本</th><th>日志长度</th><th>日志末尾</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -396,6 +507,9 @@ function run() {
     return;
   }
   const result = replay(input);
+  lastResult = result;
+  // 切换/重新回放后，选中的见证若在原轨迹上已不存在（事件被删改），清除选择
+  if (selectedWitnessKey && !findWitness(result, selectedWitnessKey)) selectedWitnessKey = null;
   const summary = $('#result-summary');
   if (result.inputError) {
     summary.innerHTML = `<span class="summary-fail">录入不合法：${esc(result.inputError.message)}</span>`;
@@ -416,6 +530,15 @@ $('#btn-add-repl').addEventListener('click', () => { uiEvents.push(newReplEvent(
 $('#btn-add-commit').addEventListener('click', () => { uiEvents.push(newCommitEvent()); renderEditor(); });
 $('#btn-run').addEventListener('click', run);
 $('#nodes-input').addEventListener('input', updateCounters);
+
+// 见证选择：事件委托，切换选择后仅重渲染结果区域（录入表单与 JSON 面板不受影响）
+$('#timeline').addEventListener('click', (ev) => {
+  const chip = ev.target.closest('.wchip');
+  if (!chip || !lastResult) return;
+  const key = chip.dataset.wkey;
+  selectedWitnessKey = selectedWitnessKey === key ? null : key;
+  renderSnapshots(lastResult);
+});
 
 $('#btn-json').addEventListener('click', () => {
   const panel = $('#json-panel');
